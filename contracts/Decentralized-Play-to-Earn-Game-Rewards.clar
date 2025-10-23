@@ -46,6 +46,8 @@
   metadata-uri: (string-utf8 256)
 })
 
+(define-map delegated-approvals {owner: principal, operator: principal} bool)
+
 (define-map tournaments uint {
   creator: principal,
   name: (string-ascii 64),
@@ -65,6 +67,18 @@
 })
 
 (define-map tournament-rankings uint (list 100 principal))
+
+(define-public (set-transfer-operator (op principal) (approved uint))
+  (let ((flag (> approved u0)))
+    (map-set delegated-approvals {owner: tx-sender, operator: op} flag)
+    (print {event: "operator-approval", owner: tx-sender, operator: op, approved: flag})
+    (ok flag)
+  )
+)
+
+(define-read-only (is-transfer-operator (owner principal) (delegate principal))
+  (ok (default-to false (map-get? delegated-approvals {owner: owner, operator: delegate})))
+)
 
 (define-public (register-player)
   (let ((player tx-sender)
@@ -233,9 +247,12 @@
 )
 
 (define-public (transfer (token-id uint) (sender principal) (recipient principal))
-  (let ((badge (unwrap! (map-get? nft-badges token-id) ERR_INVALID_TOKEN)))
+  (let (
+        (badge (unwrap! (map-get? nft-badges token-id) ERR_INVALID_TOKEN))
+        (authorized (or (is-eq tx-sender sender) (default-to false (map-get? delegated-approvals {owner: sender, operator: tx-sender}))))
+      )
     (asserts! (is-eq sender (get owner badge)) ERR_NOT_OWNER)
-    (asserts! (is-eq tx-sender sender) ERR_NOT_AUTHORIZED)
+    (asserts! authorized ERR_NOT_AUTHORIZED)
     (map-set nft-badges token-id (merge badge {owner: recipient}))
     (print {event: "nft-transfer", token-id: token-id, sender: sender, recipient: recipient})
     (ok true)
@@ -265,6 +282,7 @@
 (define-read-only (get-last-token-id)
   (ok (- (var-get next-token-id) u1))
 )
+
 
 (define-read-only (get-token-uri (token-id uint))
   (ok (some (get metadata-uri (unwrap! (map-get? nft-badges token-id) ERR_INVALID_TOKEN))))
