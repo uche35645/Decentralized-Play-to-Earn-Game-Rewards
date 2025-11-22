@@ -1,5 +1,3 @@
-;; SIP-009 NFT trait implementation
-
 (define-constant CONTRACT_OWNER tx-sender)
 (define-constant ERR_NOT_AUTHORIZED (err u401))
 (define-constant ERR_PLAYER_EXISTS (err u402))
@@ -117,6 +115,26 @@
       )
       (ok new-xp)
     )
+  )
+)
+
+(define-public (increment-session-nonce)
+  (let ((player tx-sender)
+        (player-data (unwrap! (map-get? players player) ERR_PLAYER_NOT_FOUND)))
+    (asserts! (not (get banned player-data)) ERR_BANNED_PLAYER)
+    (let ((new-nonce (+ (get session-nonce player-data) u1)))
+      (map-set players player (merge player-data {
+        session-nonce: new-nonce
+      }))
+      (ok new-nonce)
+    )
+  )
+)
+
+(define-read-only (get-session-nonce (player principal))
+  (match (map-get? players player)
+    player-data (ok (get session-nonce player-data))
+    (ok u0)
   )
 )
 
