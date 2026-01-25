@@ -11,8 +11,13 @@
 (define-constant ERR_BANNED_PLAYER (err u410))
 (define-constant ERR_INVALID_TOKEN (err u411))
 (define-constant ERR_NOT_OWNER (err u412))
+(define-constant ERR_QUEST_ALREADY_COMPLETED (err u413))
+(define-constant ERR_QUEST_NOT_AVAILABLE (err u414))
 
 (define-constant MAX_LEVEL u100)
+(define-constant QUEST_COOLDOWN_BLOCKS u144)
+(define-constant BASE_QUEST_XP u50)
+(define-constant STREAK_BONUS_MULTIPLIER u10)
 (define-constant XP_PER_LEVEL u1000)
 (define-constant MIN_PROOF_LENGTH u32)
 (define-constant MAX_TOURNAMENTS u1000)
@@ -65,6 +70,12 @@
 })
 
 (define-map tournament-rankings uint (list 100 principal))
+
+(define-map daily-quests principal {
+  last-completion-height: uint,
+  current-streak: uint,
+  total-quests-completed: uint
+})
 
 (define-public (set-transfer-operator (op principal) (approved uint))
   (let ((flag (> approved u0)))
@@ -274,6 +285,45 @@
     (map-set nft-badges token-id (merge badge {owner: recipient}))
     (print {event: "nft-transfer", token-id: token-id, sender: sender, recipient: recipient})
     (ok true)
+  )
+)
+
+(define-public (complete-daily-quest)
+  (let ((player tx-sender)
+        (player-data (unwrap! (map-get? players player) ERR_PLAYER_NOT_FOUND))
+        (quest-data (default-to {last-completion-height: u0, current-streak: u0, total-quests-completed: u0} (map-get? daily-quests player)))
+        (current-height stacks-block-height)
+        (blocks-since-last (- current-height (get last-completion-height quest-data))))
+    (asserts! (not (get banned player-data)) ERR_BANNED_PLAYER)
+    (asserts! (>= blocks-since-last QUEST_COOLDOWN_BLOCKS) ERR_QUEST_ALREADY_COMPLETED)
+    (let ((streak-maintained (< blocks-since-last (* QUEST_COOLDOWN_BLOCKS u2)))
+          (new-streak (if streak-maintained (+ (get current-streak quest-data) u1) u1))
+          (streak-bonus (* new-streak STREAK_BONUS_MULTIPLIER))
+          (total-xp (+ BASE_QUEST_XP streak-bonus)))
+      (map-set daily-quests player {
+        last-completion-height: current-height,
+        current-streak: new-streak,
+        total-quests-completed: (+ (get total-quests-completed quest-data) u1)
+      })
+      (unwrap-panic (gain-xp total-xp))
+      (print {event: "daily-quest-completed", player: player, streak: new-streak, xp-earned: total-xp})
+      (ok {streak: new-streak, xp-earned: total-xp})
+    )
+  )
+)
+
+(define-read-only (get-daily-quest-status (player principal))
+  (let ((quest-data (default-to {last-completion-height: u0, current-streak: u0, total-quests-completed: u0} (map-get? daily-quests player)))
+        (current-height stacks-block-height)
+        (blocks-since-last (- current-height (get last-completion-height quest-data)))
+        (is-available (>= blocks-since-last QUEST_COOLDOWN_BLOCKS))
+        (blocks-until-next (if is-available u0 (- QUEST_COOLDOWN_BLOCKS blocks-since-last))))
+    (ok {
+      current-streak: (get current-streak quest-data),
+      total-completed: (get total-quests-completed quest-data),
+      is-available: is-available,
+      blocks-until-next: blocks-until-next
+    })
   )
 )
 
