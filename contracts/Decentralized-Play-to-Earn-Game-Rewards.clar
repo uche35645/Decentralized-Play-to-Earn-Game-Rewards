@@ -13,6 +13,10 @@
 (define-constant ERR_NOT_OWNER (err u412))
 (define-constant ERR_QUEST_ALREADY_COMPLETED (err u413))
 (define-constant ERR_QUEST_NOT_AVAILABLE (err u414))
+(define-constant ERR_SELF_REFERRAL (err u415))
+(define-constant ERR_ALREADY_REFERRED (err u416))
+(define-constant ERR_REFERRER_NOT_FOUND (err u417))
+(define-constant ERR_REFERRAL_ALREADY_CLAIMED (err u418))
 
 (define-constant MAX_LEVEL u100)
 (define-constant QUEST_COOLDOWN_BLOCKS u144)
@@ -21,6 +25,8 @@
 (define-constant XP_PER_LEVEL u1000)
 (define-constant MIN_PROOF_LENGTH u32)
 (define-constant MAX_TOURNAMENTS u1000)
+(define-constant REFERRAL_BONUS_XP u200)
+(define-constant REFERRAL_LEVEL_THRESHOLD u5)
 
 (define-data-var contract-uri (string-utf8 256) u"https://p2e-rewards.stacks.co/metadata")
 (define-data-var next-token-id uint u1)
@@ -76,6 +82,14 @@
   current-streak: uint,
   total-quests-completed: uint
 })
+
+(define-map referrals principal {
+  referrer: (optional principal),
+  referral-count: uint,
+  total-bonus-earned: uint
+})
+
+(define-map referral-claims {referrer: principal, referred: principal} bool)
 
 (define-public (set-transfer-operator (op principal) (approved uint))
   (let ((flag (> approved u0)))
@@ -354,6 +368,50 @@
 
 (define-read-only (get-token-uri (token-id uint))
   (ok (some (get metadata-uri (unwrap! (map-get? nft-badges token-id) ERR_INVALID_TOKEN))))
+)
+
+(define-public (set-referrer (referrer principal))
+  (let ((player tx-sender)
+        (player-data (unwrap! (map-get? players player) ERR_PLAYER_NOT_FOUND))
+        (referral-data (default-to {referrer: none, referral-count: u0, total-bonus-earned: u0} (map-get? referrals player))))
+    (asserts! (not (is-eq player referrer)) ERR_SELF_REFERRAL)
+    (asserts! (is-none (get referrer referral-data)) ERR_ALREADY_REFERRED)
+    (asserts! (is-some (map-get? players referrer)) ERR_REFERRER_NOT_FOUND)
+    (asserts! (not (get banned player-data)) ERR_BANNED_PLAYER)
+    (map-set referrals player (merge referral-data {referrer: (some referrer)}))
+    (let ((referrer-referral-data (default-to {referrer: none, referral-count: u0, total-bonus-earned: u0} (map-get? referrals referrer))))
+      (map-set referrals referrer (merge referrer-referral-data {
+        referral-count: (+ (get referral-count referrer-referral-data) u1)
+      }))
+    )
+    (print {event: "referrer-set", player: player, referrer: referrer})
+    (ok true)
+  )
+)
+
+(define-public (claim-referral-bonus (referred principal))
+  (let ((referrer tx-sender)
+        (referrer-data (unwrap! (map-get? players referrer) ERR_PLAYER_NOT_FOUND))
+        (referred-data (unwrap! (map-get? players referred) ERR_PLAYER_NOT_FOUND))
+        (referral-info (unwrap! (map-get? referrals referred) ERR_REFERRER_NOT_FOUND)))
+    (asserts! (not (get banned referrer-data)) ERR_BANNED_PLAYER)
+    (asserts! (is-eq (some referrer) (get referrer referral-info)) ERR_NOT_AUTHORIZED)
+    (asserts! (>= (get level referred-data) REFERRAL_LEVEL_THRESHOLD) ERR_INSUFFICIENT_XP)
+    (asserts! (not (default-to false (map-get? referral-claims {referrer: referrer, referred: referred}))) ERR_REFERRAL_ALREADY_CLAIMED)
+    (map-set referral-claims {referrer: referrer, referred: referred} true)
+    (let ((referrer-referral-data (default-to {referrer: none, referral-count: u0, total-bonus-earned: u0} (map-get? referrals referrer))))
+      (map-set referrals referrer (merge referrer-referral-data {
+        total-bonus-earned: (+ (get total-bonus-earned referrer-referral-data) REFERRAL_BONUS_XP)
+      }))
+    )
+    (unwrap-panic (gain-xp REFERRAL_BONUS_XP))
+    (print {event: "referral-bonus-claimed", referrer: referrer, referred: referred, bonus: REFERRAL_BONUS_XP})
+    (ok REFERRAL_BONUS_XP)
+  )
+)
+
+(define-read-only (get-referral-info (player principal))
+  (ok (default-to {referrer: none, referral-count: u0, total-bonus-earned: u0} (map-get? referrals player)))
 )
 
 (define-read-only (calculate-level (xp uint))
